@@ -1,0 +1,178 @@
+<%- |
+  Stdlib::Absolutepath $src_install_dir,
+  Stdlib::Absolutepath $src_data_dir,
+  Stdlib::Absolutepath $dest_install_dir,
+  Stdlib::Absolutepath $dest_data_dir,
+  Stdlib::Absolutepath $log_dir,
+  Stdlib::Port $sql_port,
+  Stdlib::Port $http_port,
+  Sensitive[String] $dba_password,
+| -%>
+#!/bin/bash
+# MANAGED BY PUPPET (ontoportal::virtuoso::public)
+# Clone Virtuoso database and clean private ontologies and user metadata
+
+# -----------------------------
+# Pathsinfo
+# -----------------------------
+SRC_DB_APP="<%= $src_install_dir %>"
+SRC_DB_DATA="<%= $src_data_dir %>"
+DEST_DB_APP="<%= $dest_install_dir %>"
+DEST_DB_DATA="<%= $dest_data_dir %>"
+VIRTUOSO_PUBLIC_CONFIG_FILE="$DEST_DB_APP/database/virtuoso.ini"
+
+# -----------------------------
+# Logging infos
+# -----------------------------
+LOG_DIR="<%= $log_dir %>"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/virtuoso-public-$(date +%Y-%m-%d_%H-%M-%S).log"
+
+# -----------------------------
+# Virutoso public connection info
+# -----------------------------
+HOST="localhost"
+PORT="<%= $sql_port %>"
+USER="dba"
+PASS="<%= $dba_password.unwrap %>"
+
+# Graphs to delete and from which to delete private ontologies
+ONTOLOGY_META_GRAPH="http://data.bioontology.org/metadata/Ontology"
+SUBMISSION_META_GRAPH="http://data.bioontology.org/metadata/OntologySubmission"
+USER_META_GRAPH="http://data.bioontology.org/metadata/User"
+
+
+echo "==== $(date) Starting Virtuoso clone and cleanup ====" | tee -a $LOG_FILE
+
+# stop virtuoso-public before cloning to ensure files are not in use
+echo "Stopping virtuoso-public service..." | tee -a $LOG_FILE
+sudo systemctl stop virtuoso-public || { echo "ERROR: Failed to stop virtuoso-public service!" | tee -a $LOG_FILE; exit 1; }
+
+# Step 1: Clone Virtuoso app to virtuoso-public if it doesn't exist
+if [[ ! -d "$DEST_DB_APP" ]]; then
+    echo "Cloning database from $SRC_DB_APP to $DEST_DB_APP..." | tee -a $LOG_FILE
+    cp -r "$SRC_DB_APP" "$DEST_DB_APP" || { echo "ERROR: Database clone failed!" | tee -a $LOG_FILE; exit 1; }
+fi
+
+# Step 2: remove existing data directory if it exists (to ensure a clean clone) and create a new one
+if [[ -d "$DEST_DB_DATA" ]]; then
+    echo "Removing existing destination data directory at $DEST_DB_DATA..." | tee -a $LOG_FILE
+    rm -rf "$DEST_DB_DATA" || { echo "ERROR: Failed to remove existing destination data directory!" | tee -a $LOG_FILE; exit 1; }
+fi
+echo "Creating destination data directory at $DEST_DB_DATA..." | tee -a $LOG_FILE
+mkdir -p "$DEST_DB_DATA" || { echo "ERROR: Failed to create destination data directory!" | tee -a $LOG_FILE; exit 1; }
+
+# Step 3: Clone the data directory
+echo "Cloning database data from $SRC_DB_DATA to $DEST_DB_DATA..." | tee -a $LOG_FILE
+cp -r "$SRC_DB_DATA"/* "$DEST_DB_DATA" || { echo "ERROR: Database data clone failed!" | tee -a $LOG_FILE; exit 1; }
+
+
+# Step 4: Clean logs, migration folder, and lock files
+echo "Cleaning logs, migration folder, and lock files..." | tee -a $LOG_FILE
+rm -rf "$DEST_DB_APP"/*.log "$DEST_DB_DATA"/*.log "$DEST_DB_DATA"/migration/* "$DEST_DB_DATA"/*.lck
+
+# Step 3: Update virtuoso.ini
+echo "Updating configuration in $VIRTUOSO_PUBLIC_CONFIG_FILE..." | tee -a $LOG_FILE
+
+if [ -f "$VIRTUOSO_PUBLIC_CONFIG_FILE" ]; then
+    # Update ServerPort (works as is)
+    echo " - Updating ServerPort to <%= $http_port %> for HTTPServer and <%= $sql_port %> for Parameters..." | tee -a $LOG_FILE
+    sed -i '/^\[HTTPServer\]/,/^\[/{s/^ServerPort.*/ServerPort                      = <%= $http_port %>/}' "$VIRTUOSO_PUBLIC_CONFIG_FILE"
+    sed -i '/^\[Parameters\]/,/^\[/{s/^ServerPort.*/ServerPort                      = <%= $sql_port %>/}' "$VIRTUOSO_PUBLIC_CONFIG_FILE"
+
+    # Update Database paths safely using | as delimiter
+    echo " - Updating Database file paths to point to $DEST_DB_DATA..." | tee -a $LOG_FILE
+    sed -i '/^\[Database\]/,/^\[/{s|^DatabaseFile.*|DatabaseFile                      = '"$DEST_DB_DATA"'/virtuoso.db|}' "$VIRTUOSO_PUBLIC_CONFIG_FILE"
+    sed -i '/^\[Database\]/,/^\[/{s|^ErrorLogFile.*|ErrorLogFile                      = '"$DEST_DB_DATA"'/virtuoso.log|}' "$VIRTUOSO_PUBLIC_CONFIG_FILE"
+    sed -i '/^\[Database\]/,/^\[/{s|^LockFile.*|LockFile                              = '"$DEST_DB_DATA"'/virtuoso.lck|}' "$VIRTUOSO_PUBLIC_CONFIG_FILE"
+    sed -i '/^\[Database\]/,/^\[/{s|^TransactionFile.*|TransactionFile                = '"$DEST_DB_DATA"'/virtuoso.trx|}' "$VIRTUOSO_PUBLIC_CONFIG_FILE"
+    sed -i '/^\[Database\]/,/^\[/{s|^xa_persistent_file.*|xa_persistent_file          = '"$DEST_DB_DATA"'/virtuoso.pxa|}' "$VIRTUOSO_PUBLIC_CONFIG_FILE"
+    # TempDatabase section
+    sed -i '/^\[TempDatabase\]/,/^\[/{s|^DatabaseFile.*|DatabaseFile                  = '"$DEST_DB_DATA"'/virtuoso-temp.db|}' "$VIRTUOSO_PUBLIC_CONFIG_FILE"
+    sed -i '/^\[TempDatabase\]/,/^\[/{s|^TransactionFile.*|TransactionFile            = '"$DEST_DB_DATA"'/virtuoso-temp.trx|}' "$VIRTUOSO_PUBLIC_CONFIG_FILE"
+else
+    echo "WARNING: Config file $VIRTUOSO_PUBLIC_CONFIG_FILE not found!" | tee -a $LOG_FILE
+fi
+
+# Step 4: Restart Services
+echo "Restarting virtuoso-public..." | tee -a $LOG_FILE
+sudo systemctl restart virtuoso-public || { echo "ERROR: virtuoso-public restart failed!" | tee -a $LOG_FILE; exit 1; }
+
+echo "Restarting Nginx..." | tee -a $LOG_FILE
+sudo systemctl restart nginx || { echo "ERROR: Nginx restart failed!" | tee -a $LOG_FILE; exit 1; }
+
+# Step 5: Wait and check Virtuoso
+echo "Sleeping for 1 minute to ensure Virtuoso is ready..." | tee -a $LOG_FILE
+sleep 60
+
+echo "Checking if virtuoso-public service is running..." | tee -a $LOG_FILE
+if ! systemctl is-active --quiet virtuoso-public; then
+    echo "ERROR: virtuoso-public service is not running! Aborting cleanup." | tee -a $LOG_FILE
+    exit 1
+fi
+echo "virtuoso-public is running." | tee -a $LOG_FILE
+
+# -----------------------------
+# Step 6: Cleanup private ontologies
+# -----------------------------
+echo "==== Starting cleanup $(date) ====" | tee -a $LOG_FILE
+
+PRIVATE_ONTOLOGIES=$($DEST_DB_APP/bin/isql $PORT $USER $PASS exec="
+SPARQL
+SELECT ?ontology
+FROM <$ONTOLOGY_META_GRAPH>
+WHERE {
+  ?ontology <http://data.bioontology.org/metadata/viewingRestriction> \"private\" .
+}
+" 2>&1 | tee -a $LOG_FILE | grep -o 'http://data\.bioontology\.org/ontologies/[^ ]*' | sed 's|http://data.bioontology.org/ontologies/||')
+
+if [ -z "$PRIVATE_ONTOLOGIES" ]; then
+    echo "No private ontologies found. Exiting." | tee -a $LOG_FILE
+else
+    echo "Private ontologies detected:" | tee -a $LOG_FILE
+    echo "$PRIVATE_ONTOLOGIES" | tee -a $LOG_FILE
+
+    for acro in $PRIVATE_ONTOLOGIES; do
+        ontology_full_uri="http://data.bioontology.org/ontologies/$acro"
+        echo "Processing ontology: $ontology_full_uri" | tee -a $LOG_FILE
+
+        # Delete ontology metadata
+        echo " - Deleting ontology metadata..." | tee -a $LOG_FILE
+        $DEST_DB_APP/bin/isql $PORT $USER $PASS exec="
+        SPARQL
+        WITH <$ONTOLOGY_META_GRAPH>
+        DELETE { <$ontology_full_uri> ?p ?o . }
+        WHERE { OPTIONAL { <$ontology_full_uri> ?p ?o . } };
+        " 2>&1 | tee -a $LOG_FILE
+
+        # Delete its submissions
+        SUBMISSIONS=$($DEST_DB_APP/bin/isql $PORT $USER $PASS exec="
+        SPARQL
+        SELECT DISTINCT ?s
+        FROM <$SUBMISSION_META_GRAPH>
+        WHERE { ?s ?p ?o . FILTER(STRSTARTS(STR(?s), '$ontology_full_uri/submissions/')) }
+        " 2>&1 | tee -a $LOG_FILE | grep -o "$ontology_full_uri/submissions/[0-9]\+")
+
+        if [ -n "$SUBMISSIONS" ]; then
+            for sub in $SUBMISSIONS; do
+                echo "   - Deleting metadata for submission: $sub" | tee -a $LOG_FILE
+                $DEST_DB_APP/bin/isql $PORT $USER $PASS exec="
+                SPARQL
+                WITH <$SUBMISSION_META_GRAPH>
+                DELETE { <$sub> ?p ?o . }
+                WHERE { OPTIONAL { <$sub> ?p ?o . } };
+                " 2>&1 | tee -a $LOG_FILE
+
+                echo "   - Dropping submission graph: $sub" | tee -a $LOG_FILE
+                $DEST_DB_APP/bin/isql $PORT $USER $PASS exec="SPARQL DROP SILENT GRAPH <$sub>;" 2>&1 | tee -a $LOG_FILE
+            done
+        fi
+    done
+fi
+
+# Delete User metadata graph
+echo "Deleting User metadata graph..." | tee -a $LOG_FILE
+$DEST_DB_APP/bin/isql $PORT $USER $PASS exec="SPARQL DROP SILENT GRAPH <$USER_META_GRAPH>;" 2>&1 | tee -a $LOG_FILE
+
+echo "==== Cleanup completed successfully $(date) ====" | tee -a $LOG_FILE
+

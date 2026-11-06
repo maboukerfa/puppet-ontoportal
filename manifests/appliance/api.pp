@@ -15,6 +15,12 @@ class ontoportal::appliance::api (
   $app_root_dir  = $ontoportal::appliance::app_root_dir,
   $api_domain_name = $ontoportal::appliance::api_domain_name,
   Boolean $enable_4store = false,
+  Enum['agraph', 'virtuoso', 'external'] $triple_store = 'agraph',
+  # tomcat contexts that get a deployable placeholder war
+  Array[String] $webapps = ['annotatorplus'],
+  Enum['present', 'absent'] $sidekiq   = 'absent',
+  Enum['present', 'absent'] $mgrep_lem = 'absent',
+  Enum['present', 'absent'] $fairness  = 'absent',
 ) {
   if $manage_firewall {
     include ontoportal::firewall::api
@@ -42,6 +48,12 @@ class ontoportal::appliance::api (
     repo_path    => "${data_dir}/repository",
   }
 
+  # with a UI on this node, the UI ruby is the global one
+  $ruby_scope = $ontoportal::appliance::ui ? {
+    true  => 'local',
+    false => 'global',
+  }
+
   class { 'ontoportal::ontologies_api':
     environment         => 'appliance',
     port                => $api_port,
@@ -57,6 +69,7 @@ class ontoportal::appliance::api (
     install_ruby        => true,
     install_java        => false,
     app_root            => "${app_root_dir}/ontologies_api",
+    ruby_scope          => $ruby_scope,
   }
 
   class { 'ontoportal::redis::goo_cache':
@@ -93,7 +106,17 @@ class ontoportal::appliance::api (
     fourstore::kb { 'ontologies_api': segments => 4 }
   }
 
-  class { 'ontoportal::agraph':
+  case $triple_store {
+    'agraph': {
+      class { 'ontoportal::agraph':
+      }
+    }
+    'virtuoso': {
+      contain ontoportal::virtuoso
+    }
+    default: {
+      notice("Skipping triple store setup; it's managed externally.")
+    }
   }
 
   class { 'mgrep':
@@ -104,6 +127,26 @@ class ontoportal::appliance::api (
 
   include mgrep::dictrefresh
 
+  if $mgrep_lem == 'present' {
+    class { 'ontoportal::mgrep_lem':
+      group   => $group,
+      require => Class['mgrep'],
+    }
+  }
+
+  if $sidekiq == 'present' {
+    class { 'ontoportal::sidekiq':
+      user     => $owner,
+      app_root => "${app_root_dir}/ontologies_api",
+    }
+  }
+
+  if $fairness == 'present' {
+    class { 'ontoportal::fairness':
+      user => $owner,
+    }
+  }
+
   # annotator plus proxy reverse proxy
   nginx::resource::location { '/annotatorplus/':
     ensure => present,
@@ -113,11 +156,13 @@ class ontoportal::appliance::api (
   }
 
   # add placeholder files with proper permissions for deployment
-  file { '/srv/tomcat/webapps/annotatorplus.war':
-    replace => 'no',
-    content => 'placeholder',
-    mode    => '0644',
-    owner   => $owner,
-    require => Class[ontoportal::tomcat],
+  $webapps.each |String $webapp| {
+    file { "${ontoportal::tomcat::catalina_base}/webapps/${webapp}.war":
+      replace => 'no',
+      content => 'placeholder',
+      mode    => '0644',
+      owner   => $owner,
+      require => Class[ontoportal::tomcat],
+    }
   }
 }

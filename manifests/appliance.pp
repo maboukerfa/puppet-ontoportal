@@ -26,6 +26,11 @@
 # @param ui_ruby_version The Ruby version to use for the UI component (defaults to API version).
 # @param goo_cache_maxmemory Max memory allocated to the Goo cache layer.
 # @param http_cache_maxmemory Max memory allocated to the HTTP cache layer.
+# @param stack_services systemd services (no .service suffix) in start order. When set,
+#   op{start,stop,status} and the ontoportal sudoers rules are generated from it
+#   instead of using the virtual_appliance scripts.
+# @param loopback_hosts Names resolved to 127.0.0.1, e.g. the API domain so the UI reaches it locally.
+# @param sysctl_settings Extra kernel settings, e.g. { 'net.ipv6.conf.all.disable_ipv6' => '1' }.
 #
 class ontoportal::appliance (
   Boolean $ui                        = true,
@@ -49,6 +54,9 @@ class ontoportal::appliance (
   String $ui_ruby_version            =  $api_ruby_version,
   String $goo_cache_maxmemory        = '512M',
   String $http_cache_maxmemory       = '512M',
+  Array[String] $stack_services      = [],
+  Array[Stdlib::Fqdn] $loopback_hosts = [],
+  Hash[String, String] $sysctl_settings = {},
 ) {
   if $manage_firewall {
     require ontoportal::firewall
@@ -139,6 +147,23 @@ class ontoportal::appliance (
   kernel_parameter { 'net.ifnames':
     value => '0',
   }
+
+  $sysctl_settings.each |String $key, String $value| {
+    sysctl { $key:
+      value => $value,
+    }
+  }
+
+  # e.g. 127.0.0.1 data.example.org example.org
+  unless empty($loopback_hosts) {
+    host { $loopback_hosts[0]:
+      ip           => '127.0.0.1',
+      host_aliases => $loopback_hosts[1, -1],
+    }
+  }
+
+  # lets hiera declare cron::job entries
+  include cron
 
   class { 'motd':
     content => "OntoPortal Appliance v${appliance_version}\n",
@@ -264,8 +289,19 @@ ontoportal ALL = NOPASSWD: ONTOPORTAL, NGINX, NCBO_CRON, SOLR, FSHTTPD, FSBACKEN
     # config_file_replace => false,
   }
 
-  sudo::conf { 'appliance':
-    source => 'puppet:///modules/ontoportal/etc/sudoers.d/appliance',
+  # generated rules follow the services actually deployed; the static file assumes agraph/4store
+  if empty($stack_services) {
+    sudo::conf { 'appliance':
+      source => 'puppet:///modules/ontoportal/etc/sudoers.d/appliance',
+    }
+  } else {
+    sudo::conf { 'appliance':
+      content => epp('ontoportal/etc/sudoers.d/appliance.epp', {
+          'user'         => $owner,
+          'app_root_dir' => $app_root_dir,
+          'services'     => $stack_services,
+      }),
+    }
   }
 
   file_line { 'add appliance ip to /etc/issue':
@@ -278,17 +314,22 @@ ontoportal ALL = NOPASSWD: ONTOPORTAL, NGINX, NCBO_CRON, SOLR, FSHTTPD, FSBACKEN
     ensure => symlink,
     target => "${app_root_dir}/virtual_appliance/utils/oprestart",
   }
-  file { '/usr/local/bin/opstop':
-    ensure => symlink,
-    target => "${app_root_dir}/virtual_appliance/utils/opstop",
-  }
-  file { '/usr/local/bin/opstart':
-    ensure => symlink,
-    target => "${app_root_dir}/virtual_appliance/utils/opstart",
-  }
-  file { '/usr/local/bin/opstatus':
-    ensure => symlink,
-    target => "${app_root_dir}/virtual_appliance/utils/opstatus",
+  # opstart/opstop/opstatus hardcode the agraph stack; generate them when the stack differs
+  ['opstop', 'opstart', 'opstatus'].each |String $script| {
+    if empty($stack_services) {
+      file { "/usr/local/bin/${script}":
+        ensure => symlink,
+        target => "${app_root_dir}/virtual_appliance/utils/${script}",
+      }
+    } else {
+      file { "/usr/local/bin/${script}":
+        ensure  => file,
+        owner   => 'root',
+        group   => 'root',
+        mode    => '0755',
+        content => epp("ontoportal/usr/local/bin/${script}.epp", { 'services' => $stack_services }),
+      }
+    }
   }
   file { '/usr/local/bin/opclearcaches':
     ensure => symlink,

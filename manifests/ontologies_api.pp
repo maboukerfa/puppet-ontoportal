@@ -27,6 +27,11 @@ class ontoportal::ontologies_api (
   Boolean $manage_nginx_repo       = true,
   Boolean $manage_firewall         = true,
   Stdlib::Absolutepath $data_dir   = '/srv/ontoportal',
+  # cert used when manage_letsencrypt is false, e.g. a CA-issued cert deployed by hand
+  Stdlib::Absolutepath $static_ssl_cert = '/etc/ssl/certs/ssl-cert-snakeoil.pem',
+  Stdlib::Absolutepath $static_ssl_key  = '/etc/ssl/private/ssl-cert-snakeoil.key',
+  # 'local' when another component (UI) owns the global rbenv version
+  Enum['global', 'local'] $ruby_scope = 'global',
 ) {
   case $facts['os']['family'] {
     'RedHat': {
@@ -60,7 +65,7 @@ class ontoportal::ontologies_api (
   # ontoportal/deployer user needs sudo to restart unicorn on deployments
   sudo::conf { 'unicorn':
     priority => 55,
-    content  => "${owner} ALL=(ALL) NOPASSWD: /bin/systemctl stop unicorn, /bin/systemctl start unicorn, /bin/systemctl restart unicorn",
+    content  => "${owner} ALL=(ALL) NOPASSWD: /bin/systemctl stop unicorn, /bin/systemctl start unicorn, /bin/systemctl restart unicorn, /bin/systemctl stop unicorn.service, /bin/systemctl start unicorn.service, /bin/systemctl restart unicorn.service",
   }
 
   File {
@@ -78,7 +83,9 @@ class ontoportal::ontologies_api (
   }
 
   if $install_ruby and !defined(Ontoportal::Rbenv[$ruby_version]) {
-    ontoportal::rbenv { $ruby_version: }
+    ontoportal::rbenv { $ruby_version:
+      global => $ruby_scope == 'global',
+    }
   }
 
   nginx::resource::upstream { 'ontologies_api':
@@ -110,14 +117,14 @@ class ontoportal::ontologies_api (
     $_ssl_key   = $ssl_key
   } else {
     $enable_ssl = $enable_https
-    # set to a self-signed cert so that nginx doesn't fall over before we get our cert
-    $_ssl_cert  = '/etc/ssl/certs/ssl-cert-snakeoil.pem'
-    $_ssl_key   = '/etc/ssl/private/ssl-cert-snakeoil.key'
+    # defaults to a self-signed cert so that nginx doesn't fall over before we get our cert
+    $_ssl_cert  = $static_ssl_cert
+    $_ssl_key   = $static_ssl_key
   }
 
   # don't enable default server for nginx if its running on standard ports,
   # just in case UI is running on the same machine
-  $listen_options = ($port == 80 and $port_https == 443) ? {
+  $listen_options = ($port == 80 or $port_https == 443) ? {
     true  => undef,
     false => 'default_server',
   }

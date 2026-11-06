@@ -1,0 +1,17 @@
+<%- |
+  String $user,
+  Stdlib::Absolutepath $app_root_dir,
+  Array[String] $services,
+| -%>
+<%-
+  # one alias per service, e.g. redis-server-goo_cache => REDIS_SERVER_GOO_CACHE
+  $aliases = $services.map |$service| { upcase(regsubst($service, '[^A-Za-z0-9]', '_', 'G')) }
+-%>
+# MANAGED BY PUPPET
+Cmnd_Alias ONTOPORTAL = /usr/local/bin/oprestart, /usr/local/bin/opstop, /usr/local/bin/opstart, /usr/local/bin/opstatus, /usr/local/bin/opclearcaches
+<% $services.each |$index, $service| { -%>
+Cmnd_Alias <%= $aliases[$index] %> = /bin/systemctl status <%= $service %>, /bin/systemctl start <%= $service %>, /bin/systemctl stop <%= $service %>, /bin/systemctl restart <%= $service %>
+<% } -%>
+Cmnd_Alias UTILS = /usr/sbin/virt-what, <%= $app_root_dir %>/virtual_appliance/utils/bootstrap/gen_tlscert.sh
+
+<%= $user %> ALL = NOPASSWD: ONTOPORTAL, <%= ($aliases + ['UTILS']).join(', ') %>

@@ -1,0 +1,43 @@
+<%- | Array[String] $services | -%>
+#!/bin/bash
+# MANAGED BY PUPPET
+# Ontoportal backend servers status
+
+TERM=linux
+
+services='
+<% $services.each |$service| { -%>
+<%= $service %>.service
+<% } -%>
+'
+
+NC=$(tput sgr0)
+RED=$(tput setaf 1)
+GRN=$(tput setaf 2)
+VERBOSE=false
+
+
+while getopts "v" Option
+  do
+   case $Option in
+     v )
+       VERBOSE=true
+     ;;
+   esac
+done
+if $VERBOSE; then
+  echo "SOLR status:"
+  curl "http://localhost:8983/solr/admin/cores?action=STATUS"
+fi
+
+for service in $services; do
+  isactive=$(/bin/systemctl is-active $service)
+  STATUS=$((STATUS + $?))
+  if [[ "$isactive" == 'active' ]]; then
+     COLOR=$GRN
+  else
+     COLOR=$RED
+  fi
+  printf "%*s %b\n" -35 "${service}" "${COLOR}${isactive}${NC}"
+done
+exit $STATUS

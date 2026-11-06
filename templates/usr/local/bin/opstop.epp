@@ -1,0 +1,17 @@
+<%- | Array[String] $services | -%>
+#!/bin/bash
+# MANAGED BY PUPPET
+# Script to stop OntoPortal stack, in reverse start order
+if (( $EUID != 0 )); then
+    echo "Please run with \"sudo $0\""
+    exit
+fi
+services='
+<% $services.reverse.each |$service| { -%>
+<%= $service %>.service
+<% } -%>
+'
+
+for service in $services; do
+  /bin/systemctl stop $service
+done

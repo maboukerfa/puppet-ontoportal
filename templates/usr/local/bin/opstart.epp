@@ -1,0 +1,14 @@
+<%- | Array[String] $services | -%>
+#!/bin/bash
+# MANAGED BY PUPPET
+# Script to start OntoPortal stack
+
+services='
+<% $services.each |$service| { -%>
+<%= $service %>.service
+<% } -%>
+'
+
+for service in $services; do
+  /bin/systemctl start $service
+done

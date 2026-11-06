@@ -34,6 +34,9 @@ class ontoportal::bioportal_web_ui (
   Stdlib::Port $port               = 80,
   Boolean $manage_nginx_repo       = false,
   Stdlib::Absolutepath $bundle_bin = '/usr/local/rbenv/shims/bundle',
+  # cert used when manage_letsencrypt is false, e.g. a CA-issued cert deployed by hand
+  Stdlib::Absolutepath $static_ssl_cert = '/etc/ssl/certs/ssl-cert-snakeoil.pem',
+  Stdlib::Absolutepath $static_ssl_key  = '/etc/ssl/private/ssl-cert-snakeoil.key',
 ) {
   include ontoportal::firewall::http
 
@@ -117,9 +120,9 @@ class ontoportal::bioportal_web_ui (
     $_ssl_key   = $ssl_key
   } else {
     $enable_ssl = $enable_https
-    # set to a self-signed cert so that nginx doesn't fall over before we get our cert
-    $_ssl_cert  = '/etc/ssl/certs/ssl-cert-snakeoil.pem'
-    $_ssl_key   = '/etc/ssl/private/ssl-cert-snakeoil.key'
+    # defaults to a self-signed cert so that nginx doesn't fall over before we get our cert
+    $_ssl_cert  = $static_ssl_cert
+    $_ssl_key   = $static_ssl_key
   }
 
   $_enable_https_redirect = $enable_ssl and $enable_https_redirect

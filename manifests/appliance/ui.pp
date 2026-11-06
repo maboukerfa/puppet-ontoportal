@@ -14,6 +14,9 @@ class ontoportal::appliance::ui (
   $api_domain_name = $ontoportal::appliance::api_domain_name,
   $enable_https = true,
   $puma_workers = undef,
+  Stdlib::Absolutepath $app_dir = "${app_root_dir}/bioportal_web_ui",
+  # extra server names under the UI domain, e.g. ['www']
+  Array[String] $slices = [],
 ) {
   if $manage_firewall {
     include ontoportal::firewall::http
@@ -28,9 +31,9 @@ class ontoportal::appliance::ui (
     manage_letsencrypt => $manage_letsencrypt,
     logrotate_nginx    => 7,
     logrotate_rails    => 7,
-    app_root           => "${app_root_dir}/bioportal_web_ui",
+    app_root           => $app_dir,
     domain             => $ui_domain_name,
-    slices             => [],
+    slices             => $slices,
     install_ruby       => true,
     puma_workers       => $puma_workers,
   }
@@ -79,7 +82,7 @@ class ontoportal::appliance::ui (
 
   #FIXME
   # add placeholder files with proper permissions for deployment
-  file { '/srv/tomcat/webapps/biomixer.war':
+  file { "${ontoportal::tomcat::catalina_base}/webapps/biomixer.war":
     replace => false,
     content => 'placeholder',
     mode    => '0644',

@@ -1,0 +1,188 @@
+---
+# Hiera node data reproducing stageportal (stage.agroportal.eu) as of 2026-11.
+#
+# Drop it in the control repo (github.com/ontoportal/ontoportal-appliance-puppet-control-repo)
+# as data/nodes/<certname>.yaml; site.pp stays `include role::appliance`.
+#
+#   nginx :443 ─┬─ stage.agroportal.eu        → puma ui        (ontoportal_web_ui, ruby 3.1.0)
+#               ├─ data.stage.agroportal.eu   → unicorn api    (ontologies_api, ruby 3.2.11)
+#               │                               + sidekiq, ncbo_cron
+#               ├─ sparql.stage.agroportal.eu → virtuoso-public :8891 (nightly clone of virtuoso :8890)
+#               ├─ services.stage...          → tomcat :8082 (ncbo_proxy, annotator, ofaire)
+#               ├─ status.stage...            → sidekiq web UI
+#               └─ wiki/dev.stage...          → docker side apps (vhosts only)
+#
+# Not covered, provision by hand:
+#   - TLS cert + key at the paths below
+#   - virtuoso: grant SPARQL_UPDATE to the SPARQL user
+#   - wars in tomcat webapps (placeholders only), app code (capistrano, agroportal_deployment)
+#   - capistrano deploy key in ~ontoportal/.ssh/authorized_keys
+#   - docker, Outline and La Suite Docs stacks
+
+stageportal::tls_cert: /etc/ssl/certs/stage.agroportal.eu.fullchain.pem
+stageportal::tls_key: /etc/ssl/private/stage.agroportal.eu.key
+
+# --- domains, ports, TLS
+ontoportal::appliance::ui_domain_name: stage.agroportal.eu
+ontoportal::appliance::api_domain_name: data.stage.agroportal.eu
+ontoportal::appliance::api_port: 8080
+ontoportal::appliance::api_port_https: 443
+ontoportal::appliance::ui::slices:
+  - www
+# UI and ncbo_cron reach the API through its public name
+ontoportal::appliance::loopback_hosts:
+  - data.stage.agroportal.eu
+  - stage.agroportal.eu
+ontoportal::ontologies_api::static_ssl_cert: "%{lookup('stageportal::tls_cert')}"
+ontoportal::ontologies_api::static_ssl_key: "%{lookup('stageportal::tls_key')}"
+ontoportal::bioportal_web_ui::static_ssl_cert: "%{lookup('stageportal::tls_cert')}"
+ontoportal::bioportal_web_ui::static_ssl_key: "%{lookup('stageportal::tls_key')}"
+
+# --- ruby and code layout, apps are deployed with capistrano
+ontoportal::appliance::ui_ruby_version: 3.1.0
+ontoportal::appliance::api_ruby_version: 3.2.11
+ontoportal::appliance::ui::app_dir: /opt/ontoportal/ontoportal_web_ui
+ontoportal::appliance::ui::puma_workers: 2
+ontoportal::ncbo_cron::layout: capistrano
+
+# --- backend services
+ontoportal::appliance::api::triple_store: virtuoso
+ontoportal::virtuoso::public_mirror: present
+ontoportal::solr::mode: cloud
+ontoportal::appliance::api::mgrep_lem: present
+ontoportal::appliance::api::sidekiq: present
+ontoportal::appliance::api::fairness: present
+ontoportal::appliance::api::webapps:
+  - annotatorplus
+  - annotator
+  - ncbo_proxy
+  - fairness-assessment
+ontoportal::tomcat::catalina_home: /opt/tomcat
+ontoportal::tomcat::catalina_base: /srv/ontoportal/data/tomcat
+
+# redis 6.2 from packages.redis.io; jammy ships 6.0
+redis::manage_repo: true
+redis::redis_apt_repo: true
+redis::package_ensure: '6:6.2.21-1rl1~jammy1'
+
+# --- system
+ontoportal::appliance::sysctl_settings:
+  net.ipv6.conf.all.disable_ipv6: '1'
+  net.ipv6.conf.default.disable_ipv6: '1'
+
+# start order; opstop runs it backwards, sudoers lets ontoportal control each one
+ontoportal::appliance::stack_services:
+  - virtuoso
+  - virtuoso-public
+  - mariadb
+  - tomcat
+  - redis-server-goo_cache
+  - redis-server-http_cache
+  - redis-server-persistent
+  - mgrep
+  - mgrep-lem
+  - memcached
+  - solr
+  - ncbo_cron
+  - unicorn
+  - ui
+  - nginx
+  - sidekiq
+
+cron::job:
+  tmp-cleanup:
+    command: '/usr/bin/find /tmp -mindepth 1 -not -path "/tmp/systemd-private-*" -mtime +1 -exec rm -rf {} +'
+    hour: 23
+    minute: 0
+
+# --- extra nginx sites; puppet purges unmanaged ones, so side apps are listed too
+nginx::nginx_servers_defaults:
+  ssl: true
+  ssl_cert: "%{lookup('stageportal::tls_cert')}"
+  ssl_key: "%{lookup('stageportal::tls_key')}"
+  index_files: []
+
+nginx::nginx_servers:
+  sparql.stage.agroportal.eu:
+    listen_port: 443
+    proxy: http://localhost:8891/
+    proxy_set_header:
+      - X-Forwarded-For $proxy_add_x_forwarded_for
+      - Host $http_host
+      - X-Real-IP $remote_addr
+  services.stage.agroportal.eu:
+    listen_port: 443
+    proxy: http://localhost:8082/ncbo_proxy/
+    proxy_read_timeout: 1800s
+    # tomcat apps see Host localhost:8082, as before
+    proxy_set_header: []
+  status.stage.agroportal.eu:
+    ssl_redirect: true
+    proxy: http://localhost:8080
+    proxy_set_header: &status_headers
+      - Host $host
+      - X-Real-IP $remote_addr
+      - X-Forwarded-For $proxy_add_x_forwarded_for
+      - X-Forwarded-Proto $scheme
+    # keep sidekiq session cookies on this subdomain
+    add_header:
+      Set-Cookie:
+        'Path=/; SameSite=Strict; Secure; HttpOnly': always
+      X-Frame-Options:
+        SAMEORIGIN: always
+      X-Content-Type-Options:
+        nosniff: always
+    server_cfg_ssl_append:
+      proxy_cookie_domain: '~^.*$ $host'
+      proxy_cookie_path: '/ /'
+  wiki.stage.agroportal.eu:
+    ssl_redirect: true
+    proxy: http://127.0.0.1:3333
+    proxy_http_version: '1.1'
+    proxy_set_header: &websocket_headers
+      - Host $host
+      - X-Real-IP $remote_addr
+      - X-Forwarded-For $proxy_add_x_forwarded_for
+      - X-Forwarded-Proto https
+      - Upgrade $http_upgrade
+      - Connection "upgrade"
+  dev.stage.agroportal.eu:
+    ssl_redirect: true
+    proxy: http://127.0.0.1:3000
+    proxy_http_version: '1.1'
+    proxy_set_header: *websocket_headers
+
+nginx::nginx_locations_defaults:
+  ssl: true
+  ssl_only: true
+
+nginx::nginx_locations:
+  sparql-root:
+    server: sparql.stage.agroportal.eu
+    location: '= /'
+    location_custom_cfg:
+      return: 301 /sparql
+  services-ofaire:
+    server: services.stage.agroportal.eu
+    location: /ofaire
+    proxy: http://localhost:8082/fairness-assessment/
+    proxy_read_timeout: 1800s
+    proxy_set_header: []
+  services-annotator:
+    server: services.stage.agroportal.eu
+    location: /annotator
+    proxy: http://localhost:8082/annotator/
+    proxy_read_timeout: 1800s
+    proxy_set_header: []
+  status-sidekiq:
+    server: status.stage.agroportal.eu
+    location: /sidekiq
+    proxy: http://localhost:8080/sidekiq
+    proxy_read_timeout: 1800s
+    proxy_set_header: *status_headers
+  # sidekiq UI is only reachable through status.stage
+  api-sidekiq-block:
+    server: ontologies_api
+    location: /sidekiq
+    location_custom_cfg:
+      return: 444

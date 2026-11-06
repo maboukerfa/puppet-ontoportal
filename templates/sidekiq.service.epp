@@ -1,0 +1,37 @@
+<%- |
+  String $user,
+  Stdlib::Absolutepath $app_root,
+  String $environment,
+  Stdlib::Host $redis_host,
+  Stdlib::Port $redis_port,
+  Integer $redis_db,
+  Integer $concurrency,
+  Integer $parsing_concurrency,
+  Stdlib::Absolutepath $log_file,
+  Stdlib::Absolutepath $bundle_bin,
+| -%>
+[Unit]
+Description=Sidekiq Background Job Processor
+After=network.target redis-server-persistent.service
+
+[Service]
+Type=simple
+User=<%= $user %>
+WorkingDirectory=<%= $app_root %>/current
+# rbenv shims under systemd need these to resolve reliably
+Environment=RBENV_ROOT=/usr/local/rbenv
+Environment=PATH=/usr/local/rbenv/shims:/usr/local/rbenv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=RAILS_ENV=<%= $environment %>
+Environment=REDIS_SIDEKIQ_HOST=<%= $redis_host %>
+Environment=REDIS_SIDEKIQ_PORT=<%= $redis_port %>
+Environment=REDIS_SIDEKIQ_DB=<%= $redis_db %>
+Environment=SIDEKIQ_CONCURRENCY=<%= $concurrency %>
+Environment=SIDEKIQ_PARSING_CONCURRENCY=<%= $parsing_concurrency %>
+ExecStart=<%= $bundle_bin %> exec sidekiq -e <%= $environment %> -C <%= $app_root %>/current/config/sidekiq.yml -r <%= $app_root %>/current/config/sidekiq_boot.rb
+Restart=always
+RestartSec=5
+StandardOutput=append:<%= $log_file %>
+StandardError=append:<%= $log_file %>
+
+[Install]
+WantedBy=multi-user.target
