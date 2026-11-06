@@ -7,11 +7,14 @@ define ontoportal::rbenv (
   # ruby can take a while to compile
   Exec { timeout => 1800 }
 
-  class { 'rbenv':
-    env => [
-      'TMPDIR=/var/tmp',  # in case if /tmp is mounted with noexec which will break ruby build
-      "MAKE_OPTS=-j${facts['processors']['count']}" # use all available cores to speed up builds
-    ],
+  # one rbenv install serves every ruby version (e.g. UI 3.1.0 + API 3.2.11)
+  if !defined(Class['rbenv']) {
+    class { 'rbenv':
+      env => [
+        'TMPDIR=/var/tmp',  # in case if /tmp is mounted with noexec which will break ruby build
+        "MAKE_OPTS=-j${facts['processors']['count']}" # use all available cores to speed up builds
+      ],
+    }
   }
 
   if !defined(Rbenv::Plugin['rbenv/ruby-build']) {

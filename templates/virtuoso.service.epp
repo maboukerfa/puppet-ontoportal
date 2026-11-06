@@ -1,0 +1,24 @@
+<%- |
+  String $description,
+  String $user,
+  Stdlib::Absolutepath $install_dir,
+  Optional[String] $exec_stop,
+  Enum['no', 'on-failure'] $restart,
+| -%>
+[Unit]
+Description=<%= $description %>
+After=network.target
+
+[Service]
+Type=simple
+User=<%= $user %>
+Group=<%= $user %>
+WorkingDirectory=<%= $install_dir %>/database
+ExecStart=<%= $install_dir %>/bin/virtuoso-t +configfile <%= $install_dir %>/database/virtuoso.ini +foreground
+<% if $exec_stop { -%>
+ExecStop=<%= $exec_stop %>
+<% } -%>
+Restart=<%= $restart %>
+
+[Install]
+WantedBy=multi-user.target

@@ -25,6 +25,9 @@ class ontoportal::ncbo_cron (
   Boolean $install_java = true,
   Boolean $install_ruby = true,
   String $java_version  = 'openjdk-11-jre-headless',
+  # capistrano: code in ${app_path}/current, pid in ${app_path}/shared/tmp/pids
+  Enum['flat', 'capistrano'] $layout = 'flat',
+  Stdlib::Absolutepath $bundle_bin   = '/usr/local/rbenv/shims/bundle',
 ) {
   require ontoportal::params
   case $facts['os']['family'] {
@@ -85,11 +88,28 @@ class ontoportal::ncbo_cron (
     content => "d /run/ncbo_cron 0755 $owner $group"
   }
 
+  # capistrano deploys run as $owner and restart the service themselves
+  if $layout == 'capistrano' {
+    file { ["${app_path}/shared", "${app_path}/shared/tmp", "${app_path}/shared/tmp/pids"]:
+      ensure => directory,
+      owner  => $owner,
+      group  => $group,
+      mode   => '0775',
+    }
+
+    sudo::conf { 'ncbo_cron':
+      priority => 55,
+      content  => "${owner} ALL=(ALL) NOPASSWD: /bin/systemctl stop ncbo_cron.service, /bin/systemctl start ncbo_cron.service, /bin/systemctl restart ncbo_cron.service",
+    }
+  }
+
   systemd::unit_file { 'ncbo_cron.service':
     content => epp('ontoportal/ncbo_cron.service.epp', {
-        app_path => $app_path,
-        user     => $owner,
-        group    => $group,
+        app_path   => $app_path,
+        user       => $owner,
+        group      => $group,
+        layout     => $layout,
+        bundle_bin => $bundle_bin,
         }),
   }
   ~> service { 'ncbo_cron':

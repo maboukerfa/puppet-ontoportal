@@ -2,6 +2,8 @@
   String $user,
   String $group,
   Stdlib::Absolutepath $app_path,
+  Enum['flat', 'capistrano'] $layout,
+  Stdlib::Absolutepath $bundle_bin,
 | -%>
 
 [Unit]
@@ -9,17 +11,26 @@ Description=ncbo_cron service
 After=network.target
 
 [Service]
+<% if $layout == 'capistrano' { -%>
+ExecStart=<%= $bundle_bin %> exec <%= $app_path %>/current/bin/ncbo_cron --daemon -u <%= $user %> -G <%= $group %> -P <%= $app_path %>/shared/tmp/pids/ncbo_cron.pid
+<% } else { -%>
 Type=forking
 ExecStart=<%= $app_path %>/bin/ncbo_cron --daemon -P /run/ncbo_cron/ncbo_cron.pid
+<% } -%>
 ExecStop=/usr/bin/kill -QUIT $MAINPID
 ExecReload=/usr/bin/kill -USR2 $MAINPID
 SyslogIdentifier=ncbo_cron
 User=<%= $user %>
 Group=<%= $group %>
+<% if $layout == 'capistrano' { -%>
+PIDFile=<%= $app_path %>/shared/tmp/pids/ncbo_cron.pid
+PermissionsStartOnly=false
+<% } else { -%>
 PIDFile=/run/ncbo_cron/ncbo_cron.pid
+<% } -%>
 TimeoutStopSec=62
 PrivateTmp=yes
-WorkingDirectory=<%= $app_path %>
+WorkingDirectory=<%= $app_path %><% if $layout == 'capistrano' { %>/current<% } %>
 Environment="PATH=/usr/local/rbenv/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 [Install]

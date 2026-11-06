@@ -30,6 +30,8 @@ class ontoportal::solr (
   Boolean $manage_java             = true,
   String $java_package             = 'openjdk-11-jdk-headless',
   $fwsrc                           = [],
+  # cloud: SolrCloud with embedded zookeeper, same as `solr start -c`
+  Enum['standalone', 'cloud'] $mode = 'standalone',
 ) {
   if $manage_java {
     Class { 'java':
@@ -64,6 +66,12 @@ class ontoportal::solr (
     $_solr_environment = 'SOLR_OPTS="${SOLR_OPTS}"' # lint:ignore:single_quote_string_with_variables
   }
 
+  # bin/solr switches to cloud mode when solr.in.sh sets SOLR_MODE
+  $_solr_mode_environment = $mode ? {
+    'cloud' => ['SOLR_MODE="solrcloud"'],
+    default => [],
+  }
+
   user { 'solr':
     ensure     => 'present',
     comment    => 'solr',
@@ -84,7 +92,7 @@ class ontoportal::solr (
     manage_java      => false,
     java_home        => '/usr/lib/jvm/java-11-openjdk-amd64',
     var_dir          => $var_dir,
-    solr_environment => [$_solr_environment],
+    solr_environment => [$_solr_environment] + $_solr_mode_environment,
   }
 
   $core_dirs = [
@@ -115,47 +123,52 @@ class ontoportal::solr (
     owner  => $owner,
     group  => $group,
   }
-  -> file { $config_dir:
-    ensure  => directory,
-    owner   => $deployeruser,
-    group   => $deployergroup,
-    mode    => '0755',
-    before  => Class['solr'],
-    require => User['solr'],
-  }
-  -> file { ["${config_dir}/property_search", "${config_dir}/term_search"]:
-    ensure  => directory,
-    owner   => $deployeruser,
-    group   => $deployergroup,
-    mode    => '0644',
-    recurse => true,
-  }
-  -> file { $core_dirs:
-    ensure => directory,
-    owner  => $owner,
-    group  => $group,
-    mode   => '0755',
-  }
-  -> file {
-    "${data_dir}/prop_search_core1/conf":
-      ensure => symlink,
-      target => "${config_dir}/property_search";
-    "${data_dir}/prop_search_core2/conf":
-      ensure => symlink,
-      target => "${config_dir}/property_search";
-  #term search cores
-    "${data_dir}/term_search_core1/conf":
-      ensure => symlink,
-      target => "${config_dir}/term_search";
-    "${data_dir}/term_search_core2/conf":
-      ensure => symlink,
-      target => "${config_dir}/term_search";
-  }
-  -> file { $core_prop_files:
-    ensure  => present,
-    replace => false,
-    owner   => $owner,
-    group   => $group,
+
+  # standalone cores; in cloud mode collections live in zookeeper and these would clash
+  if $mode == 'standalone' {
+    File[$var_dir]
+    -> file { $config_dir:
+      ensure  => directory,
+      owner   => $deployeruser,
+      group   => $deployergroup,
+      mode    => '0755',
+      before  => Class['solr'],
+      require => User['solr'],
+    }
+    -> file { ["${config_dir}/property_search", "${config_dir}/term_search"]:
+      ensure  => directory,
+      owner   => $deployeruser,
+      group   => $deployergroup,
+      mode    => '0644',
+      recurse => true,
+    }
+    -> file { $core_dirs:
+      ensure => directory,
+      owner  => $owner,
+      group  => $group,
+      mode   => '0755',
+    }
+    -> file {
+      "${data_dir}/prop_search_core1/conf":
+        ensure => symlink,
+        target => "${config_dir}/property_search";
+      "${data_dir}/prop_search_core2/conf":
+        ensure => symlink,
+        target => "${config_dir}/property_search";
+    #term search cores
+      "${data_dir}/term_search_core1/conf":
+        ensure => symlink,
+        target => "${config_dir}/term_search";
+      "${data_dir}/term_search_core2/conf":
+        ensure => symlink,
+        target => "${config_dir}/term_search";
+    }
+    -> file { $core_prop_files:
+      ensure  => present,
+      replace => false,
+      owner   => $owner,
+      group   => $group,
+    }
   }
 
   file { "${data_dir}/solr.xml":
@@ -166,21 +179,23 @@ class ontoportal::solr (
     content => '<solr> </solr>',
   }
 
-  exec { 'initial config property_search':
-    cwd     => $config_dir,
-    command => "/bin/cp -avr /opt/solr/server/solr/configsets/_default/conf/* ${config_dir}/property_search && \
+  if $mode == 'standalone' {
+    exec { 'initial config property_search':
+      cwd     => $config_dir,
+      command => "/bin/cp -avr /opt/solr/server/solr/configsets/_default/conf/* ${config_dir}/property_search && \
                 /bin/chown -R ${deployeruser}:${deployergroup} ${config_dir}/property_search",
-    unless  => "/usr/bin/test -f ${config_dir}/property_search/managed-schema",
-    timeout => 600,
-    require => [File[$config_dir], Class['solr']],
-  }
-  exec { 'initial config term_search':
-    cwd     => $config_dir,
-    command => "/bin/cp -avr /opt/solr/server/solr/configsets/_default/conf/* ${config_dir}/term_search && \
+      unless  => "/usr/bin/test -f ${config_dir}/property_search/managed-schema",
+      timeout => 600,
+      require => [File[$config_dir], Class['solr']],
+    }
+    exec { 'initial config term_search':
+      cwd     => $config_dir,
+      command => "/bin/cp -avr /opt/solr/server/solr/configsets/_default/conf/* ${config_dir}/term_search && \
                 /bin/chown -R ${deployeruser}:${deployergroup} ${config_dir}/term_search",
-    unless  => "/usr/bin/test -f ${config_dir}/term_search/managed-schema",
-    timeout => 600,
-    require => [ File[$config_dir], Class['solr'],]
+      unless  => "/usr/bin/test -f ${config_dir}/term_search/managed-schema",
+      timeout => 600,
+      require => [ File[$config_dir], Class['solr'],]
+    }
   }
 
   #v8.2 has global maxboolClauses setting which sets global max. We have to set it here in addition to solrconfig.xml
